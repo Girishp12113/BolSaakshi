@@ -14,6 +14,7 @@ import { useAgreement } from "@/hooks/use-agreements"
 import { storage } from "@/lib/storage"
 import {
   formatINR, formatDate, totalPaid, outstandingAmount, overpaymentAmount,
+  getStatusLabel, getStatusDescription,
   type Agreement, type Payment
 } from "@/lib/schema"
 import Nav from "@/components/nav"
@@ -33,7 +34,7 @@ function StatusBadge({ status }: { status: Agreement["status"] }) {
       ) : (
         <span className="w-1.5 h-1.5 rounded-full bg-[#B75D42]" />
       )}
-      {status === "draft" ? "Draft Record" : "Acknowledged by Parties"}
+      {getStatusLabel(status)}
     </span>
   )
 }
@@ -734,9 +735,7 @@ export default function AgreementDetailPage({
               <div>
                 <StatusBadge status={agreement.status} />
                 <p className="text-xs text-[#282521]/60 mt-2 max-w-sm leading-relaxed">
-                  {agreement.status === "draft"
-                    ? "Currently an unconfirmed draft record in this browser. To confirm mutual agreement, share the written summary via WhatsApp or printout with the other party."
-                    : "Marked as acknowledged in this browser. Mutual confirmation requires independent acknowledgement by both parties."}
+                  {getStatusDescription(agreement.status)}
                 </p>
               </div>
               <button
@@ -744,7 +743,7 @@ export default function AgreementDetailPage({
                 onClick={handleStatusToggle}
                 className="shrink-0 px-4 py-2 border border-[#D8C9B4] bg-[#F8F5EE] rounded-lg text-xs font-semibold text-[#282521] hover:border-[#B75D42] transition-colors"
               >
-                {agreement.status === "draft" ? "Mark as Acknowledged" : "Revert to Draft"}
+                {agreement.status === "draft" ? "Mark as Acknowledged (Self-Reported)" : "Revert to Draft"}
               </button>
             </div>
           </div>

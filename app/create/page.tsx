@@ -237,6 +237,36 @@ function InfoBanner({ children, type = "info" }: { children: React.ReactNode; ty
   )
 }
 
+type TargetField =
+  | "additionalTerms"
+  | "completionDate"
+  | "startDate"
+  | "materialsResponsibility"
+  | "totalAmount"
+  | "advanceAmount"
+  | "workLocation"
+
+function detectSuggestedField(question: string): TargetField {
+  const q = question.toLowerCase()
+  if (/advance|deposit|बयाना|అడ్వాన్స్/i.test(q)) return "advanceAmount"
+  if (/total|amount|rate|price|cost|कुल राशि|మొత్తం/i.test(q)) return "totalAmount"
+  if (/material|supplies|who.*(buys|provides|purchase)|सामग्री|సామగ్రి/i.test(q)) return "materialsResponsibility"
+  if (/deadline|completion|finish|target date|कब तक|ఎప్పటిలోగా/i.test(q)) return "completionDate"
+  if (/start date|begin|when.*start|कब शुरू|ఎప్పుడు మొదలు/i.test(q)) return "startDate"
+  if (/location|address|site|where|कहाँ|ఎక్కడ/i.test(q)) return "workLocation"
+  return "additionalTerms"
+}
+
+const FIELD_LABELS: Record<TargetField, string> = {
+  additionalTerms: "Additional Term",
+  completionDate: "Completion Deadline",
+  startDate: "Start Date",
+  materialsResponsibility: "Materials Responsibility",
+  totalAmount: "Total Price",
+  advanceAmount: "Advance Amount",
+  workLocation: "Work Location",
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function CreatePage() {
@@ -277,12 +307,14 @@ export default function CreatePage() {
   const [extractError, setExtractError] = useState<string | null>(null)
   const [extractUnconfigured, setExtractUnconfigured] = useState(false)
   const [extractedModelName, setExtractedModelName] = useState<string | null>(null)
+  const [safetyAudit, setSafetyAudit] = useState<{ status: string; policy?: string } | null>(null)
 
   // Confirmation field edits
   const [editedExtraction, setEditedExtraction] = useState<ExtractionResult>(emptyExtraction())
 
   // Clarification inline answer drafts: record questionIndex -> answerText
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({})
+  const [clarificationTargets, setClarificationTargets] = useState<Record<number, TargetField>>({})
 
   // Saving
   const [saving, setSaving] = useState(false)
@@ -496,6 +528,10 @@ export default function CreatePage() {
         unconfigured?: boolean
         model?: string
         provider?: string
+        metaSafetyAudit?: {
+          status: string
+          policy?: string
+        } | null
       }
 
       if (!res.ok) {
@@ -519,6 +555,7 @@ export default function CreatePage() {
       setRawExtraction(ext)
       setEditedExtraction({ ...ext })
       setExtractedModelName(data.model || "openai/gpt-oss-120b")
+      setSafetyAudit(data.metaSafetyAudit ?? null)
       setStep("extraction")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Network error during extraction."
@@ -538,20 +575,71 @@ export default function CreatePage() {
 
   // ── Clarification Answer Application ────────────────────────────────────────
 
-  const applyClarificationAnswer = (index: number, question: string) => {
+  const applyClarificationAnswer = (index: number, question: string, customTarget?: TargetField) => {
     const answer = (clarificationAnswers[index] || "").trim()
     if (!answer) return
 
-    // Append the clarified term directly to additionalTerms
-    const newTerm = `Clarification: ${question} → ${answer}`
-    setEditedExtraction((prev) => ({
-      ...prev,
-      additionalTerms: [...prev.additionalTerms, newTerm],
-      clarificationQuestions: prev.clarificationQuestions.filter((_, i) => i !== index),
-    }))
+    const target = customTarget || clarificationTargets[index] || detectSuggestedField(question)
 
-    // Clear answer input
+    setEditedExtraction((prev) => {
+      const next = { ...prev }
+      const newNote = `Clarified: ${question} → ${answer}`
+      next.additionalTerms = [...next.additionalTerms, newNote]
+      next.clarificationQuestions = next.clarificationQuestions.filter((_, i) => i !== index)
+
+      // Explicitly update structured field if user selected a structured target
+      if (target === "totalAmount") {
+        const digits = answer.replace(/[^0-9.]/g, "")
+        const num = parseFloat(digits)
+        if (!isNaN(num)) next.totalAmount = Math.round(num)
+      } else if (target === "advanceAmount") {
+        const digits = answer.replace(/[^0-9.]/g, "")
+        const num = parseFloat(digits)
+        if (!isNaN(num)) next.advanceAmount = Math.round(num)
+      } else if (target === "materialsResponsibility") {
+        const a = answer.toLowerCase()
+        if (
+          a.includes("customer") ||
+          a.includes("client") ||
+          a.includes("owner") ||
+          a.includes("ग्राहक") ||
+          a.includes("యజమాని")
+        ) {
+          next.materialsResponsibility = "customer"
+        } else if (
+          a.includes("worker") ||
+          a.includes("contractor") ||
+          a.includes("technician") ||
+          a.includes("कारीगर") ||
+          a.includes("మేస్త్రీ")
+        ) {
+          next.materialsResponsibility = "worker"
+        } else if (
+          a.includes("share") ||
+          a.includes("both") ||
+          a.includes("दोनों") ||
+          a.includes("ఇద్దరు")
+        ) {
+          next.materialsResponsibility = "shared"
+        }
+      } else if (target === "completionDate") {
+        next.completionDate = answer
+      } else if (target === "startDate") {
+        next.startDate = answer
+      } else if (target === "workLocation") {
+        next.workLocation = answer
+      }
+
+      return next
+    })
+
+    // Clear answer input and target draft
     setClarificationAnswers((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+    setClarificationTargets((prev) => {
       const next = { ...prev }
       delete next[index]
       return next
@@ -926,12 +1014,35 @@ export default function CreatePage() {
           <div className="space-y-6">
 
             {/* AI Model Attribution Banner */}
-            <div className="bg-[#EDE8DF] border border-[#D8C9B4] rounded-xl p-3.5 flex items-center justify-between flex-wrap gap-2 text-xs">
-              <div className="flex items-center gap-2 text-[#282521]">
-                <Sparkles size={14} className="text-[#B75D42]" />
-                <span>Extracted using <strong>GroqCloud ({extractedModelName || "openai/gpt-oss-120b"})</strong></span>
+            <div className="bg-[#EDE8DF] border border-[#D8C9B4] rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-[#282521]">
+                  <Sparkles size={14} className="text-[#B75D42]" />
+                  <span>Extracted using <strong>GroqCloud ({extractedModelName || "openai/gpt-oss-120b"})</strong></span>
+                </div>
+                <span className="text-[#282521]/50 italic">Review &amp; adjust all fields below</span>
               </div>
-              <span className="text-[#282521]/50 italic">Review &amp; adjust all fields below</span>
+              {safetyAudit && (
+                <div className="pt-2 border-t border-[#D8C9B4]/60 flex items-center gap-2 text-[11px] text-[#282521]/75 flex-wrap">
+                  <span className={cn(
+                    "font-semibold px-2 py-0.5 rounded text-[10px] uppercase tracking-wider",
+                    safetyAudit.status === "passed_full"
+                      ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                      : safetyAudit.status === "passed_partial"
+                      ? "bg-amber-100 text-amber-800 border border-amber-300"
+                      : "bg-[#EDE8DF] text-[#282521]/70 border border-[#D8C9B4]"
+                  )}>
+                    {safetyAudit.status === "passed_full"
+                      ? "Meta Prompt Guard: Full Screen Passed"
+                      : safetyAudit.status === "passed_partial"
+                      ? "Meta Prompt Guard: Partial Screen (Passed)"
+                      : "Meta Prompt Guard: Screening Unavailable"}
+                  </span>
+                  {safetyAudit.policy && (
+                    <span className="text-[#282521]/60">{safetyAudit.policy}</span>
+                  )}
+                </div>
+              )}
             </div>
 
             {extractUnconfigured && (
@@ -976,51 +1087,91 @@ export default function CreatePage() {
 
               {editedExtraction.clarificationQuestions.length > 0 ? (
                 <div className="space-y-3 mb-4">
-                  {editedExtraction.clarificationQuestions.map((q, i) => (
-                    <div key={i} className="bg-[#F8F5EE] border border-amber-200 rounded-lg p-3.5 text-xs text-[#282521] space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="font-semibold text-amber-900 leading-snug">
-                          {i + 1}. {q}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setEditedExtraction((v) => ({
-                            ...v,
-                            clarificationQuestions: v.clarificationQuestions.filter((_, j) => j !== i)
-                          }))}
-                          className="text-amber-600 hover:text-red-600 text-xs shrink-0 font-medium px-1"
-                          title="Dismiss question"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
+                  {editedExtraction.clarificationQuestions.map((q, i) => {
+                    const suggestedField = detectSuggestedField(q)
+                    const currentTarget = clarificationTargets[i] || suggestedField
+                    return (
+                      <div key={i} className="bg-[#F8F5EE] border border-amber-200 rounded-lg p-3.5 text-xs text-[#282521] space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-semibold text-amber-900 leading-snug">
+                            {i + 1}. {q}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setEditedExtraction((v) => ({
+                              ...v,
+                              clarificationQuestions: v.clarificationQuestions.filter((_, j) => j !== i)
+                            }))}
+                            className="text-amber-600 hover:text-red-600 text-xs shrink-0 font-medium px-1"
+                            title="Dismiss question"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
 
-                      {/* Inline answer input */}
-                      <div className="flex gap-2 items-center pt-1">
-                        <input
-                          type="text"
-                          value={clarificationAnswers[i] || ""}
-                          onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [i]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault()
-                              applyClarificationAnswer(i, q)
+                        {/* Target field selector */}
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#282521]/70">
+                          <span className="font-medium text-amber-950">Update field:</span>
+                          <select
+                            value={currentTarget}
+                            onChange={(e) =>
+                              setClarificationTargets((prev) => ({
+                                ...prev,
+                                [i]: e.target.value as TargetField,
+                              }))
                             }
-                          }}
-                          placeholder="Type your answer to this question…"
-                          className="flex-1 bg-[#EDE8DF] border border-[#D8C9B4] rounded-md px-2.5 py-1.5 text-xs text-[#282521] focus:outline-none focus:border-[#B75D42]"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => applyClarificationAnswer(i, q)}
-                          disabled={!clarificationAnswers[i]?.trim()}
-                          className="px-3 py-1.5 bg-[#B75D42] text-[#F8F5EE] rounded-md text-xs font-medium hover:bg-[#B75D42]/90 disabled:opacity-40 transition-colors"
-                        >
-                          Add to Terms
-                        </button>
+                            className="bg-[#EDE8DF] border border-[#D8C9B4] rounded px-2 py-1 text-[11px] text-[#282521] focus:outline-none focus:border-[#B75D42] font-medium"
+                          >
+                            <option value="additionalTerms">Additional Terms (General note)</option>
+                            <option value="completionDate">Completion Deadline</option>
+                            <option value="startDate">Start Date</option>
+                            <option value="materialsResponsibility">Materials Responsibility</option>
+                            <option value="totalAmount">Total Agreed Amount (₹)</option>
+                            <option value="advanceAmount">Advance Deposit Amount (₹)</option>
+                            <option value="workLocation">Work Location</option>
+                          </select>
+                          {suggestedField !== "additionalTerms" && currentTarget === suggestedField && (
+                            <span className="text-[10px] text-amber-800 font-semibold bg-amber-100/70 border border-amber-200 px-1.5 py-0.5 rounded">
+                              AI Suggested Target
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Inline answer input */}
+                        <div className="flex gap-2 items-center">
+                          <input
+                            type="text"
+                            value={clarificationAnswers[i] || ""}
+                            onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [i]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault()
+                                applyClarificationAnswer(i, q, currentTarget)
+                              }
+                            }}
+                            placeholder={
+                              currentTarget === "materialsResponsibility"
+                                ? "e.g. Customer provides all pipes, or Worker provides"
+                                : currentTarget === "totalAmount" || currentTarget === "advanceAmount"
+                                ? "e.g. 15000"
+                                : currentTarget === "completionDate" || currentTarget === "startDate"
+                                ? "e.g. 2026-11-20"
+                                : "Type your answer to this question…"
+                            }
+                            className="flex-1 bg-[#EDE8DF] border border-[#D8C9B4] rounded-md px-2.5 py-1.5 text-xs text-[#282521] focus:outline-none focus:border-[#B75D42]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => applyClarificationAnswer(i, q, currentTarget)}
+                            disabled={!clarificationAnswers[i]?.trim()}
+                            className="px-3 py-1.5 bg-[#B75D42] text-[#F8F5EE] rounded-md text-xs font-medium hover:bg-[#B75D42]/90 disabled:opacity-40 transition-colors shrink-0"
+                          >
+                            {currentTarget === "additionalTerms" ? "Add to Terms" : `Apply to ${FIELD_LABELS[currentTarget]}`}
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               ) : (
                 <p className="text-xs text-amber-900/70 mb-3 italic">

@@ -9,6 +9,10 @@ import {
   ProviderUnconfiguredError,
 } from "@/lib/ai/provider"
 import { ExtractionResultSchema } from "@/lib/schema"
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit"
+
+const MAX_TRANSCRIPT_CHARS = 10000 // Prevent oversized payloads from exhausting server resources
+const MAX_PROMPT_GUARD_CHARS = 1500 // Prompt Guard 2 86M optimal context window (up to ~512 tokens)
 
 const SYSTEM_PROMPT = `You are an expert civic-tech & legaltech AI analyst for BolSaakshi.
 Your mission is to convert spoken or written work arrangements between Indian trade workers (electricians, plumbers, carpenters, painters, masons, local contractors) and their customers into a factual, structured agreement record.
@@ -105,6 +109,16 @@ function sanitizeRawModelOutput(raw: Record<string, unknown>): Record<string, un
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    // 1. App-level Rate Limiting for Public Hackathon Demo
+    const clientIp = getClientIp(request)
+    const rateCheck = checkRateLimit(`extract:${clientIp}`, { limit: 25, windowMs: 60 * 1000 })
+    if (!rateCheck.allowed) {
+      return Response.json(
+        { error: "Too many extraction requests from your IP. Please wait a minute before submitting again." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      )
+    }
+
     if (!isGroqConfigured()) {
       return Response.json(
         {
@@ -126,17 +140,33 @@ export async function POST(request: Request): Promise<Response> {
       )
     }
 
+    // 2. Input size limit validation
+    if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+      return Response.json(
+        {
+          error: `Transcript is too long (${transcript.length} characters). The maximum allowed length is ${MAX_TRANSCRIPT_CHARS} characters.`,
+        },
+        { status: 400 }
+      )
+    }
+
     const groq = getGroqClient()
     const language = body?.language || "hindi"
 
-    // Real Meta Prompt Guard safety audit on input text
+    // 3. Real Meta Prompt Guard safety audit on input text
+    // Prompt Guard 2 86M context window is ~512 tokens (~1,800 chars).
+    // We screen up to MAX_PROMPT_GUARD_CHARS (1,500) and honestly record coverage.
+    const isFullCoverage = transcript.length <= MAX_PROMPT_GUARD_CHARS
+    const coverage: "full" | "partial" = isFullCoverage ? "full" : "partial"
+    const textToAudit = transcript.slice(0, MAX_PROMPT_GUARD_CHARS)
+
     let metaPromptGuardScore: number | null = null
-    let metaGuardStatus: "passed" | "flagged" | "unavailable" = "unavailable"
+    let metaGuardStatus: "passed_full" | "passed_partial" | "flagged" | "unavailable" = "unavailable"
 
     try {
       const guardRes = await groq.chat.completions.create({
         model: "meta-llama/llama-prompt-guard-2-86m",
-        messages: [{ role: "user", content: transcript.slice(0, 500) }],
+        messages: [{ role: "user", content: textToAudit }],
         max_tokens: 10,
       })
       const scoreStr = guardRes.choices?.[0]?.message?.content?.trim()
@@ -144,7 +174,11 @@ export async function POST(request: Request): Promise<Response> {
         const parsed = parseFloat(scoreStr)
         if (!isNaN(parsed)) {
           metaPromptGuardScore = parsed
-          metaGuardStatus = parsed < 0.5 ? "passed" : "flagged"
+          if (parsed >= 0.5) {
+            metaGuardStatus = "flagged"
+          } else {
+            metaGuardStatus = isFullCoverage ? "passed_full" : "passed_partial"
+          }
         }
       }
     } catch (guardErr) {
@@ -155,7 +189,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     // Actively enforce safety threshold: reject flagged injections/exploits (score >= 0.5)
-    if (metaPromptGuardScore !== null && metaPromptGuardScore >= 0.5) {
+    if (metaGuardStatus === "flagged" && metaPromptGuardScore !== null) {
       return Response.json(
         {
           error: `Safety check failed: Meta Prompt Guard flagged this text for potential policy or prompt injection risks (score: ${metaPromptGuardScore.toFixed(3)}). Please rephrase your work arrangement description.`,
@@ -164,6 +198,10 @@ export async function POST(request: Request): Promise<Response> {
             model: "meta-llama/llama-prompt-guard-2-86m",
             jailbreakScore: metaPromptGuardScore,
             status: "flagged",
+            coverage,
+            screenedLength: textToAudit.length,
+            totalLength: transcript.length,
+            policy: "Flagged by Meta Prompt Guard: prompt injection or adversarial pattern detected.",
           },
         },
         { status: 400 }
@@ -235,18 +273,24 @@ export async function POST(request: Request): Promise<Response> {
         model: "meta-llama/llama-prompt-guard-2-86m",
         jailbreakScore: metaPromptGuardScore,
         status: metaGuardStatus,
+        coverage,
+        charactersScreened: textToAudit.length,
+        totalCharacters: transcript.length,
         policy:
-          metaGuardStatus === "passed"
-            ? "Screened with Meta Prompt Guard: no adversarial injection detected."
+          metaGuardStatus === "passed_full"
+            ? "Full transcript screened with Meta Prompt Guard: no prompt injection or adversarial input detected."
+            : metaGuardStatus === "passed_partial"
+            ? `Partial screening: initial ${textToAudit.length} of ${transcript.length} characters screened by Meta Prompt Guard (no injection in screened text; remaining characters unverified by guard).`
             : metaGuardStatus === "flagged"
-            ? "Flagged by Meta Prompt Guard."
-            : "Screening unavailable; extracted under strict zero-hallucination system prompt.",
+            ? "Flagged by Meta Prompt Guard: potential policy or prompt injection risks detected."
+            : "Screening unavailable from upstream provider. Generative extraction proceeded under zero-hallucination system prompt and strict Zod schema validation.",
       },
       modelDisclosure: {
         extractionModel: GROQ_MODELS.chat,
         transcriptionModel: GROQ_MODELS.whisper,
         metaModelEvaluated: "meta-llama/llama-prompt-guard-2-86m",
         metaGuardStatus,
+        coverage,
         metaLlamaGenerativeStatus: "not_available_on_current_groq_account",
       },
     })

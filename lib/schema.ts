@@ -104,6 +104,18 @@ export function formatDate(dateStr: string | null): string {
   }).format(new Date(dateStr))
 }
 
+export function getStatusLabel(status: AgreementStatus): string {
+  if (status === "draft") return "Draft Record"
+  return "Acknowledged (Self-Reported)"
+}
+
+export function getStatusDescription(status: AgreementStatus): string {
+  if (status === "draft") {
+    return "Currently an unconfirmed draft record on this device. To confirm mutual agreement, share the written summary via WhatsApp or printout with the other party."
+  }
+  return "Self-reported as acknowledged by this device's user. Does not establish verified two-party legal consent unless independently confirmed or physically signed by both parties."
+}
+
 export function emptyExtraction(): ExtractionResult {
   return {
     title: "",

@@ -19,9 +19,10 @@ BolSaakshi provides an accessible, zero-account web workflow:
 3. **Safety Evaluation**: Evaluates incoming transcripts with Meta's `meta-llama/llama-prompt-guard-2-86m` to detect and reject adversarial prompt injection or abusive input.
 4. **Structured Term Extraction**: Extracts parties, tasks, total price in INR, advance terms, and dates into a validated Zod schema.
 5. **Ambiguity Flags & Human Review**: Flags missing information and requires human review. It leaves unstated deadlines and undefined materials responsibilities strictly as `null` and generates targeted clarification questions rather than inventing details.
-6. **Interactive Resolution**: Answering clarification questions adds them directly to the agreement's terms.
-7. **Manual Payment Tracking**: Logs advances and staged instalments, calculating remaining balance and explicitly warning if recorded payments exceed the total contract.
+6. **Interactive Resolution**: Answering clarification questions provides an explicit, user-reviewed path to update structured fields (completion deadline, materials responsibility, total or advance amounts) or general terms without silent overwrites.
+7. **Manual Payment Tracking**: Logs advances and staged instalments, calculating total recorded payments accurately across normal, partial, overpaid, and unknown-total contracts, with explicit overpayment warnings.
 8. **WhatsApp & Print Export**: Creates a prefilled WhatsApp summary link and a formal printout with physical signature and thumbprint placeholders.
+9. **Accurate Self-Reported Status**: Uses clear self-reported acknowledgment labels to prevent misleading claims of mutual consent on single-user local records.
 
 ---
 
@@ -44,8 +45,9 @@ BolSaakshi provides an accessible, zero-account web workflow:
 **Transparent Model Disclosure**:
 - **Generative Extraction**: Currently powered by `openai/gpt-oss-120b` on GroqCloud.
 - **Speech-to-Text**: Powered by `whisper-large-v3` on GroqCloud.
-- **Meta AI Model Integrated**: Live safety inference executes via Meta's **`meta-llama/llama-prompt-guard-2-86m`** on Groq.
-- **Safety Failure Handling**: Before generative extraction, the input transcript is evaluated by `meta-llama/llama-prompt-guard-2-86m`. If the safety score is `>= 0.5` (indicating prompt injection or malicious input), the server halts extraction immediately and returns HTTP `400 Bad Request` with `safetyFlagged: true` and an instructional error message.
+- **Meta AI Model Integrated**: Live safety inference executes via Meta's **`meta-llama/llama-prompt-guard-2-86m`** on Groq (evaluating up to 1,500 characters within its 512-token context window).
+- **Safety Screening Policy**: Before generative extraction, the input transcript is screened. If the safety score is `>= 0.5` (indicating prompt injection or malicious input), the server halts extraction immediately and returns HTTP `400 Bad Request` with `safetyFlagged: true`. The API response explicitly discloses whether full (`passed_full`) or partial (`passed_partial`) screening occurred, and never claims an unavailable screening check passed.
+- **App-Level Public Protection**: Protects public demo routes with in-memory IP rate limiting (25 extractions/min, 15 transcriptions/min) and a 10,000-character input cap, preventing abuse without requiring mandatory accounts.
 - **Meta Llama Generative Status**: Direct generative models (`llama-3.3-70b-versatile` and `llama-3.1-8b-instant`) returned `model_not_found` / 404 on the developer Groq key used for this environment. The codebase architecture (`lib/ai/provider.ts`) is fully model-agnostic: once a Groq tier or compatible provider with Meta Llama generative access is provisioned, setting `GROQ_CHAT_MODEL=llama-3.3-70b-versatile` routes extraction to Meta Llama without changing client or schema logic.
 
 ---

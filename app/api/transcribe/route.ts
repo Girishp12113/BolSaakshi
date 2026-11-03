@@ -10,6 +10,7 @@ import {
   LANGUAGE_CODES,
   ProviderUnconfiguredError,
 } from "@/lib/ai/provider"
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit"
 
 const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024 // 25 MB Groq Whisper limit
 const ALLOWED_MIME_TYPES = [
@@ -39,6 +40,16 @@ function redactSecrets(text: string): string {
 
 export async function POST(request: Request): Promise<Response> {
   try {
+    // App-level Rate Limiting for Public Hackathon Demo
+    const clientIp = getClientIp(request)
+    const rateCheck = checkRateLimit(`transcribe:${clientIp}`, { limit: 15, windowMs: 60 * 1000 })
+    if (!rateCheck.allowed) {
+      return Response.json(
+        { error: "Too many transcription requests from your IP. Please wait a minute before recording again." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      )
+    }
+
     if (!isGroqConfigured()) {
       return Response.json(
         {

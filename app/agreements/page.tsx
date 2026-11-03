@@ -4,7 +4,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { useAgreements } from "@/hooks/use-agreements"
 import { storage } from "@/lib/storage"
-import { formatINR, formatDate, totalPaid, outstandingAmount, overpaymentAmount } from "@/lib/schema"
+import { formatINR, formatDate, totalPaid, outstandingAmount, overpaymentAmount, getStatusLabel } from "@/lib/schema"
 import { Plus, Search, FileText, ChevronRight, Loader2, Clock, CheckCircle, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Nav from "@/components/nav"
@@ -27,7 +27,7 @@ function StatusBadge({ status }: { status: Agreement["status"] }) {
       ) : (
         <Clock size={11} className="text-[#B75D42]" />
       )}
-      {status === "draft" ? "Draft Record" : "Acknowledged"}
+      {getStatusLabel(status)}
     </span>
   )
 }
@@ -167,16 +167,18 @@ function SummaryStats({ agreements }: { agreements: Agreement[] }) {
     const o = outstandingAmount(a)
     return s + (o ?? 0)
   }, 0)
+  // Actual sum of all recorded payments across all agreements (supports normal, partial, overpaid, and unknown-total contracts)
+  const totalActuallyPaid = agreements.reduce((s, a) => s + totalPaid(a), 0)
 
   if (total === 0) return null
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
       {[
-        { label: "Agreements", value: String(total), sub: `${acknowledged} ack, ${drafts} draft` },
-        { label: "Total Booked", value: formatINR(totalValue || null), sub: "Total contract value" },
-        { label: "Outstanding", value: formatINR(totalOutstanding || null), sub: "Pending balance" },
-        { label: "Total Paid", value: formatINR(totalValue - totalOutstanding || null), sub: "Collected so far" },
+        { label: "Agreements", value: String(total), sub: `${acknowledged} self-reported, ${drafts} draft` },
+        { label: "Total Booked", value: formatINR(totalValue), sub: "Total contract value" },
+        { label: "Outstanding", value: formatINR(totalOutstanding), sub: "Pending balance" },
+        { label: "Total Paid", value: formatINR(totalActuallyPaid), sub: "Recorded payments" },
       ].map((stat) => (
         <div key={stat.label} className="bg-[#EDE8DF] border border-[#D8C9B4] rounded-xl px-4 py-3 shadow-xs">
           <p className="text-[10px] uppercase tracking-widest text-[#282521]/60 mb-1 font-semibold">{stat.label}</p>
