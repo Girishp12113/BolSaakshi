@@ -95,13 +95,75 @@ export function formatINR(amount: number | null): string {
   }).format(amount)
 }
 
+/**
+ * Strict validation for calendar dates in YYYY-MM-DD format.
+ * Rejects free text, natural language (e.g. "next Friday"), invalid calendar dates (e.g. 2026-02-30),
+ * and incomplete date strings.
+ */
+export function isValidISODate(dateStr: string | null | undefined): boolean {
+  if (!dateStr || typeof dateStr !== "string") return false
+  const trimmed = dateStr.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return false
+  const [yearStr, monthStr, dayStr] = trimmed.split("-")
+  const year = Number(yearStr)
+  const month = Number(monthStr)
+  const day = Number(dayStr)
+
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return false
+  if (month < 1 || month > 12) return false
+  if (day < 1 || day > 31) return false
+
+  const d = new Date(year, month - 1, day)
+  return (
+    d.getFullYear() === year &&
+    d.getMonth() === month - 1 &&
+    d.getDate() === day
+  )
+}
+
+/**
+ * Formats a date string safely for display in the Indian locale (en-IN).
+ * NEVER throws RangeError: Invalid time value on invalid, malformed, or legacy natural-language dates.
+ * If the date is invalid or free-text, returns the string safely without crashing client rendering.
+ */
 export function formatDate(dateStr: string | null): string {
-  if (!dateStr) return "—"
-  return new Intl.DateTimeFormat("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(new Date(dateStr))
+  if (!dateStr || typeof dateStr !== "string") return "—"
+  const trimmed = dateStr.trim()
+  if (!trimmed) return "—"
+
+  // Standard YYYY-MM-DD date format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [year, month, day] = trimmed.split("-").map(Number)
+    const d = new Date(year, month - 1, day)
+    if (!isNaN(d.getTime())) {
+      try {
+        return new Intl.DateTimeFormat("en-IN", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        }).format(d)
+      } catch {
+        return trimmed
+      }
+    }
+  }
+
+  // Handle ISO timestamp format (e.g. 2026-11-03T18:00:00.000Z) or standard parseable dates
+  const parsed = new Date(trimmed)
+  if (!isNaN(parsed.getTime())) {
+    try {
+      return new Intl.DateTimeFormat("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }).format(parsed)
+    } catch {
+      return trimmed
+    }
+  }
+
+  // Safe fallback for legacy natural text or unparseable inputs: display string without crashing
+  return trimmed
 }
 
 export function getStatusLabel(status: AgreementStatus): string {

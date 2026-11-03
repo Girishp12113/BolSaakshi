@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils"
 import { storage } from "@/lib/storage"
 import type { Agreement, AgreementLanguage, ExtractionResult } from "@/lib/schema"
-import { emptyExtraction } from "@/lib/schema"
+import { emptyExtraction, isValidISODate } from "@/lib/schema"
 import Nav from "@/components/nav"
 import CopyButton from "@/components/ui/copy-button"
 
@@ -315,6 +315,7 @@ export default function CreatePage() {
   // Clarification inline answer drafts: record questionIndex -> answerText
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<number, string>>({})
   const [clarificationTargets, setClarificationTargets] = useState<Record<number, TargetField>>({})
+  const [clarificationErrors, setClarificationErrors] = useState<Record<number, string>>({})
 
   // Saving
   const [saving, setSaving] = useState(false)
@@ -581,6 +582,24 @@ export default function CreatePage() {
 
     const target = customTarget || clarificationTargets[index] || detectSuggestedField(question)
 
+    // Strict Date Validation: Only valid YYYY-MM-DD allowed for startDate / completionDate
+    if (target === "completionDate" || target === "startDate") {
+      if (!isValidISODate(answer)) {
+        setClarificationErrors((prev) => ({
+          ...prev,
+          [index]: `"${answer}" is a relative or natural-language date. BolSaakshi never guesses calendar dates. Please select an exact calendar date (YYYY-MM-DD), or switch the update field to "Additional Terms" to record this as a conversational note.`,
+        }))
+        return
+      }
+    }
+
+    // Clear error for this question
+    setClarificationErrors((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+
     setEditedExtraction((prev) => {
       const next = { ...prev }
       const newNote = `Clarified: ${question} → ${answer}`
@@ -660,8 +679,8 @@ export default function CreatePage() {
         customerName: editedExtraction.customerName || "",
         description: editedExtraction.description || transcript.slice(0, 200),
         workLocation: editedExtraction.workLocation,
-        startDate: editedExtraction.startDate,
-        completionDate: editedExtraction.completionDate,
+        startDate: isValidISODate(editedExtraction.startDate) ? editedExtraction.startDate : null,
+        completionDate: isValidISODate(editedExtraction.completionDate) ? editedExtraction.completionDate : null,
         currency: "INR",
         totalAmount: editedExtraction.totalAmount,
         advanceAmount: editedExtraction.advanceAmount,
@@ -1138,37 +1157,94 @@ export default function CreatePage() {
                         </div>
 
                         {/* Inline answer input */}
-                        <div className="flex gap-2 items-center">
-                          <input
-                            type="text"
-                            value={clarificationAnswers[i] || ""}
-                            onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [i]: e.target.value }))}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault()
-                                applyClarificationAnswer(i, q, currentTarget)
-                              }
-                            }}
-                            placeholder={
-                              currentTarget === "materialsResponsibility"
-                                ? "e.g. Customer provides all pipes, or Worker provides"
-                                : currentTarget === "totalAmount" || currentTarget === "advanceAmount"
-                                ? "e.g. 15000"
-                                : currentTarget === "completionDate" || currentTarget === "startDate"
-                                ? "e.g. 2026-11-20"
-                                : "Type your answer to this question…"
-                            }
-                            className="flex-1 bg-[#EDE8DF] border border-[#D8C9B4] rounded-md px-2.5 py-1.5 text-xs text-[#282521] focus:outline-none focus:border-[#B75D42]"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => applyClarificationAnswer(i, q, currentTarget)}
-                            disabled={!clarificationAnswers[i]?.trim()}
-                            className="px-3 py-1.5 bg-[#B75D42] text-[#F8F5EE] rounded-md text-xs font-medium hover:bg-[#B75D42]/90 disabled:opacity-40 transition-colors shrink-0"
-                          >
-                            {currentTarget === "additionalTerms" ? "Add to Terms" : `Apply to ${FIELD_LABELS[currentTarget]}`}
-                          </button>
-                        </div>
+                        {currentTarget === "completionDate" || currentTarget === "startDate" ? (
+                          <div className="space-y-2">
+                            <div className="flex gap-2 items-center">
+                              <input
+                                type="date"
+                                value={isValidISODate(clarificationAnswers[i] || "") ? clarificationAnswers[i] : ""}
+                                onChange={(e) => {
+                                  setClarificationAnswers((prev) => ({ ...prev, [i]: e.target.value }))
+                                  setClarificationErrors((prev) => {
+                                    const next = { ...prev }
+                                    delete next[i]
+                                    return next
+                                  })
+                                }}
+                                className="flex-1 bg-[#EDE8DF] border border-[#D8C9B4] rounded-md px-2.5 py-1.5 text-xs text-[#282521] focus:outline-none focus:border-[#B75D42]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => applyClarificationAnswer(i, q, currentTarget)}
+                                disabled={!clarificationAnswers[i]?.trim()}
+                                className="px-3 py-1.5 bg-[#B75D42] text-[#F8F5EE] rounded-md text-xs font-medium hover:bg-[#B75D42]/90 disabled:opacity-40 transition-colors shrink-0"
+                              >
+                                Apply {FIELD_LABELS[currentTarget]}
+                              </button>
+                            </div>
+                            {clarificationAnswers[i] && !isValidISODate(clarificationAnswers[i]) && (
+                              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-amber-900 bg-amber-100/80 border border-amber-300 rounded p-1.5">
+                                <span>Draft note: &quot;{clarificationAnswers[i]}&quot; (Relative term)</span>
+                                <button
+                                  type="button"
+                                  onClick={() => applyClarificationAnswer(i, q, "additionalTerms")}
+                                  className="text-[#B75D42] font-semibold underline hover:text-[#9A4B33]"
+                                >
+                                  Save as Verbal Term Instead
+                                </button>
+                              </div>
+                            )}
+                            {clarificationErrors[i] && (
+                              <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded p-1.5">
+                                {clarificationErrors[i]}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <div className="flex gap-2 items-center">
+                              <input
+                                type="text"
+                                value={clarificationAnswers[i] || ""}
+                                onChange={(e) => {
+                                  setClarificationAnswers((prev) => ({ ...prev, [i]: e.target.value }))
+                                  setClarificationErrors((prev) => {
+                                    const next = { ...prev }
+                                    delete next[i]
+                                    return next
+                                  })
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault()
+                                    applyClarificationAnswer(i, q, currentTarget)
+                                  }
+                                }}
+                                placeholder={
+                                  currentTarget === "materialsResponsibility"
+                                    ? "e.g. Customer provides all pipes, or Worker provides"
+                                    : currentTarget === "totalAmount" || currentTarget === "advanceAmount"
+                                    ? "e.g. 15000"
+                                    : "Type your answer to this question…"
+                                }
+                                className="flex-1 bg-[#EDE8DF] border border-[#D8C9B4] rounded-md px-2.5 py-1.5 text-xs text-[#282521] focus:outline-none focus:border-[#B75D42]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => applyClarificationAnswer(i, q, currentTarget)}
+                                disabled={!clarificationAnswers[i]?.trim()}
+                                className="px-3 py-1.5 bg-[#B75D42] text-[#F8F5EE] rounded-md text-xs font-medium hover:bg-[#B75D42]/90 disabled:opacity-40 transition-colors shrink-0"
+                              >
+                                {currentTarget === "additionalTerms" ? "Add to Terms" : `Apply to ${FIELD_LABELS[currentTarget]}`}
+                              </button>
+                            </div>
+                            {clarificationErrors[i] && (
+                              <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded p-1.5">
+                                {clarificationErrors[i]}
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )
                   })}

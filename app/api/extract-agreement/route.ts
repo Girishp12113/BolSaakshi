@@ -8,11 +8,27 @@ import {
   GROQ_MODELS,
   ProviderUnconfiguredError,
 } from "@/lib/ai/provider"
-import { ExtractionResultSchema } from "@/lib/schema"
+import { ExtractionResultSchema, isValidISODate } from "@/lib/schema"
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit"
 
 const MAX_TRANSCRIPT_CHARS = 10000 // Prevent oversized payloads from exhausting server resources
-const MAX_PROMPT_GUARD_CHARS = 1500 // Prompt Guard 2 86M optimal context window (up to ~512 tokens)
+const MAX_PROMPT_GUARD_CHARS = 1500 // Heuristic character slice bounded for Prompt Guard 2 86M (512-token limit)
+
+/**
+ * Conservative token count estimator for Meta Prompt Guard 2 86M (512-token context window).
+ * Indic scripts (Devanagari, Telugu) encode multiple UTF-8 bytes and subword tokens per character,
+ * whereas English ASCII averages ~3.5 to 4 characters per token.
+ */
+function estimatePromptTokens(text: string): number {
+  let nonAscii = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 127) nonAscii++
+  }
+  const ascii = text.length - nonAscii
+  // Indic/non-ASCII characters typically tokenize at ~1.2 tokens/char
+  // ASCII Latin characters tokenize at ~0.28 tokens/char
+  return Math.ceil(ascii * 0.28 + nonAscii * 1.2)
+}
 
 const SYSTEM_PROMPT = `You are an expert civic-tech & legaltech AI analyst for BolSaakshi.
 Your mission is to convert spoken or written work arrangements between Indian trade workers (electricians, plumbers, carpenters, painters, masons, local contractors) and their customers into a factual, structured agreement record.
@@ -76,8 +92,16 @@ function sanitizeRawModelOutput(raw: Record<string, unknown>): Record<string, un
   sanitized.customerName = typeof raw.customerName === "string" ? raw.customerName.trim() : ""
   sanitized.description = typeof raw.description === "string" ? raw.description.trim() : ""
   sanitized.workLocation = typeof raw.workLocation === "string" && raw.workLocation.trim().length > 0 ? raw.workLocation.trim() : null
-  sanitized.startDate = typeof raw.startDate === "string" && raw.startDate.trim().length > 0 ? raw.startDate.trim() : null
-  sanitized.completionDate = typeof raw.completionDate === "string" && raw.completionDate.trim().length > 0 ? raw.completionDate.trim() : null
+  
+  // Strict date validation: only valid YYYY-MM-DD allowed; relative/natural language stays null
+  sanitized.startDate =
+    typeof raw.startDate === "string" && isValidISODate(raw.startDate.trim())
+      ? raw.startDate.trim()
+      : null
+  sanitized.completionDate =
+    typeof raw.completionDate === "string" && isValidISODate(raw.completionDate.trim())
+      ? raw.completionDate.trim()
+      : null
 
   // Coerce title
   if (!raw.title || typeof raw.title !== "string" || raw.title.trim().length === 0) {
@@ -102,7 +126,24 @@ function sanitizeRawModelOutput(raw: Record<string, unknown>): Record<string, un
   sanitized.includedWork = toCleanArray(raw.includedWork)
   sanitized.excludedWork = toCleanArray(raw.excludedWork)
   sanitized.additionalTerms = toCleanArray(raw.additionalTerms)
-  sanitized.clarificationQuestions = toCleanArray(raw.clarificationQuestions)
+  
+  const questions = toCleanArray(raw.clarificationQuestions)
+
+  // If relative or non-ISO dates were extracted from natural conversation, prompt the user to confirm an exact calendar date
+  if (typeof raw.completionDate === "string" && raw.completionDate.trim().length > 0 && !isValidISODate(raw.completionDate.trim())) {
+    const q = `Completion deadline was described as "${raw.completionDate.trim()}". What is the exact calendar date (YYYY-MM-DD)?`
+    if (!questions.includes(q)) {
+      questions.unshift(q)
+    }
+  }
+  if (typeof raw.startDate === "string" && raw.startDate.trim().length > 0 && !isValidISODate(raw.startDate.trim())) {
+    const q = `Start date was described as "${raw.startDate.trim()}". What is the exact calendar date (YYYY-MM-DD)?`
+    if (!questions.includes(q)) {
+      questions.unshift(q)
+    }
+  }
+
+  sanitized.clarificationQuestions = questions
 
   return sanitized
 }
@@ -154,11 +195,20 @@ export async function POST(request: Request): Promise<Response> {
     const language = body?.language || "hindi"
 
     // 3. Real Meta Prompt Guard safety audit on input text
-    // Prompt Guard 2 86M context window is ~512 tokens (~1,800 chars).
-    // We screen up to MAX_PROMPT_GUARD_CHARS (1,500) and honestly record coverage.
-    const isFullCoverage = transcript.length <= MAX_PROMPT_GUARD_CHARS
-    const coverage: "full" | "partial" = isFullCoverage ? "full" : "partial"
+    // Meta Prompt Guard 2 86M has an architectural context window of 512 tokens.
+    // In multi-lingual Indian trade contexts (Devanagari Hindi, Telugu script), each character
+    // often encodes multiple UTF-8 bytes and subword tokens (~1 to 1.5 tokens/char), unlike
+    // English (~0.28 tokens/char).
+    // Therefore, character count alone does not guarantee full token coverage.
+    // We screen up to MAX_PROMPT_GUARD_CHARS (1,500 chars) while strictly bounding coverage
+    // claims to the model's actual 512-token context capacity.
     const textToAudit = transcript.slice(0, MAX_PROMPT_GUARD_CHARS)
+    const estimatedTranscriptTokens = estimatePromptTokens(transcript)
+    const estimatedAuditTokens = estimatePromptTokens(textToAudit)
+
+    // Coverage is genuinely full ONLY if the entire transcript fits within the 512-token window
+    const isFullTokenCoverage = transcript.length <= MAX_PROMPT_GUARD_CHARS && estimatedTranscriptTokens <= 480
+    const coverage: "full" | "partial" = isFullTokenCoverage ? "full" : "partial"
 
     let metaPromptGuardScore: number | null = null
     let metaGuardStatus: "passed_full" | "passed_partial" | "flagged" | "unavailable" = "unavailable"
@@ -177,7 +227,7 @@ export async function POST(request: Request): Promise<Response> {
           if (parsed >= 0.5) {
             metaGuardStatus = "flagged"
           } else {
-            metaGuardStatus = isFullCoverage ? "passed_full" : "passed_partial"
+            metaGuardStatus = isFullTokenCoverage ? "passed_full" : "passed_partial"
           }
         }
       }
@@ -199,6 +249,8 @@ export async function POST(request: Request): Promise<Response> {
             jailbreakScore: metaPromptGuardScore,
             status: "flagged",
             coverage,
+            modelContextWindowTokens: 512,
+            estimatedTokens: estimatedTranscriptTokens,
             screenedLength: textToAudit.length,
             totalLength: transcript.length,
             policy: "Flagged by Meta Prompt Guard: prompt injection or adversarial pattern detected.",
@@ -274,13 +326,15 @@ export async function POST(request: Request): Promise<Response> {
         jailbreakScore: metaPromptGuardScore,
         status: metaGuardStatus,
         coverage,
+        modelContextWindowTokens: 512,
+        estimatedTokens: estimatedTranscriptTokens,
         charactersScreened: textToAudit.length,
         totalCharacters: transcript.length,
         policy:
           metaGuardStatus === "passed_full"
-            ? "Full transcript screened with Meta Prompt Guard: no prompt injection or adversarial input detected."
+            ? `Full transcript screened with Meta Prompt Guard (~${estimatedTranscriptTokens} tokens within 512-token window): no prompt injection or adversarial input detected.`
             : metaGuardStatus === "passed_partial"
-            ? `Partial screening: initial ${textToAudit.length} of ${transcript.length} characters screened by Meta Prompt Guard (no injection in screened text; remaining characters unverified by guard).`
+            ? `Partial window screened with Meta Prompt Guard (~${Math.min(512, estimatedAuditTokens)} tokens screened within 512-token context limit). Total transcript: ~${estimatedTranscriptTokens} tokens (${transcript.length} chars). Script token density bounds screening to initial segment; remaining content unverified by guard.`
             : metaGuardStatus === "flagged"
             ? "Flagged by Meta Prompt Guard: potential policy or prompt injection risks detected."
             : "Screening unavailable from upstream provider. Generative extraction proceeded under zero-hallucination system prompt and strict Zod schema validation.",

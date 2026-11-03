@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils"
 import { useAgreement } from "@/hooks/use-agreements"
 import { storage } from "@/lib/storage"
 import {
-  formatINR, formatDate, totalPaid, outstandingAmount, overpaymentAmount,
+  formatINR, formatDate, isValidISODate, totalPaid, outstandingAmount, overpaymentAmount,
   getStatusLabel, getStatusDescription,
   type Agreement, type Payment
 } from "@/lib/schema"
@@ -50,10 +50,11 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 // ─── Edit inline field ────────────────────────────────────────────────────────
 
 function EditableField({
-  label, value, onSave, type = "text", multiline = false, nullable = false,
+  label, value, displayValue, onSave, type = "text", multiline = false, nullable = false,
 }: {
   label: string
   value: string | number | null
+  displayValue?: string
   onSave: (val: string | null) => void
   type?: string
   multiline?: boolean
@@ -61,13 +62,23 @@ function EditableField({
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(String(value ?? ""))
+  const [error, setError] = useState<string | null>(null)
 
   const commit = () => {
-    onSave(draft.trim() || (nullable ? null : draft))
+    const trimmed = draft.trim()
+    if (type === "date" && trimmed) {
+      if (!isValidISODate(trimmed)) {
+        setError("Please enter a valid date in YYYY-MM-DD format.")
+        return
+      }
+    }
+    setError(null)
+    onSave(trimmed || (nullable ? null : trimmed))
     setEditing(false)
   }
   const cancel = () => {
     setDraft(String(value ?? ""))
+    setError(null)
     setEditing(false)
   }
 
@@ -86,10 +97,18 @@ function EditableField({
           <input
             type={type}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setError(null)
+            }}
             autoFocus
             className="w-full bg-[#EDE8DF] border border-[#B75D42] rounded-lg px-3 py-2 text-sm text-[#282521] focus:outline-none"
           />
+        )}
+        {error && (
+          <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 mt-1.5">
+            {error}
+          </p>
         )}
         <div className="flex gap-3 mt-2">
           <button type="button" onClick={commit} className="flex items-center gap-1 text-xs text-emerald-800 font-semibold hover:text-emerald-900">
@@ -103,14 +122,16 @@ function EditableField({
     )
   }
 
+  const shownText = displayValue !== undefined ? displayValue : (value !== null && value !== "" ? String(value) : null)
+
   return (
     <div className="group flex items-start gap-2">
       <span className="text-sm text-[#282521] leading-relaxed">
-        {value !== null && value !== "" ? String(value) : <span className="text-[#282521]/35 italic">Not specified in oral agreement</span>}
+        {shownText ? shownText : <span className="text-[#282521]/35 italic">Not specified in oral agreement</span>}
       </span>
       <button
         type="button"
-        onClick={() => { setDraft(String(value ?? "")); setEditing(true) }}
+        onClick={() => { setDraft(String(value ?? "")); setError(null); setEditing(true) }}
         className="opacity-0 group-hover:opacity-100 transition-opacity text-[#282521]/40 hover:text-[#B75D42] p-0.5"
         aria-label={`Edit ${label}`}
       >
@@ -563,19 +584,21 @@ export default function AgreementDetailPage({
             <DataRow label="Start Date">
               <EditableField
                 label="Start date"
-                value={agreement.startDate ? formatDate(agreement.startDate) : null}
+                value={agreement.startDate}
+                displayValue={agreement.startDate ? formatDate(agreement.startDate) : undefined}
                 type="date"
                 nullable
-                onSave={(v) => update({ startDate: v })}
+                onSave={(v) => update({ startDate: v && isValidISODate(v) ? v : null })}
               />
             </DataRow>
             <DataRow label="Completion Date">
               <EditableField
                 label="Completion date"
-                value={agreement.completionDate ? formatDate(agreement.completionDate) : null}
+                value={agreement.completionDate}
+                displayValue={agreement.completionDate ? formatDate(agreement.completionDate) : undefined}
                 type="date"
                 nullable
-                onSave={(v) => update({ completionDate: v })}
+                onSave={(v) => update({ completionDate: v && isValidISODate(v) ? v : null })}
               />
             </DataRow>
             <DataRow label="Materials Responsibility">
