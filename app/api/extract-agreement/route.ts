@@ -41,6 +41,13 @@ CRITICAL RULES:
 5. All numeric values must be pure numbers, never strings with currency symbols.
 6. Output raw JSON only.`
 
+// Helper to sanitize error messages and ensure no API keys or sensitive authorization tokens leak
+function redactSecrets(text: string): string {
+  return text
+    .replace(/gsk_[a-zA-Z0-9_-]+/g, "[REDACTED_API_KEY]")
+    .replace(/Bearer\s+[a-zA-Z0-9_\-.]+/gi, "Bearer [REDACTED_TOKEN]")
+}
+
 // Helper to repair and sanitize model outputs before Zod validation
 function sanitizeRawModelOutput(raw: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = { ...raw }
@@ -124,6 +131,8 @@ export async function POST(request: Request): Promise<Response> {
 
     // Real Meta Prompt Guard safety audit on input text
     let metaPromptGuardScore: number | null = null
+    let metaGuardStatus: "passed" | "flagged" | "unavailable" = "unavailable"
+
     try {
       const guardRes = await groq.chat.completions.create({
         model: "meta-llama/llama-prompt-guard-2-86m",
@@ -133,10 +142,16 @@ export async function POST(request: Request): Promise<Response> {
       const scoreStr = guardRes.choices?.[0]?.message?.content?.trim()
       if (scoreStr) {
         const parsed = parseFloat(scoreStr)
-        if (!isNaN(parsed)) metaPromptGuardScore = parsed
+        if (!isNaN(parsed)) {
+          metaPromptGuardScore = parsed
+          metaGuardStatus = parsed < 0.5 ? "passed" : "flagged"
+        }
       }
     } catch (guardErr) {
-      console.warn("Meta Prompt Guard check warning (non-fatal):", guardErr instanceof Error ? guardErr.message : guardErr)
+      console.warn(
+        "Meta Prompt Guard check warning (non-fatal):",
+        guardErr instanceof Error ? redactSecrets(guardErr.message) : "Screening request failed"
+      )
     }
 
     // Actively enforce safety threshold: reject flagged injections/exploits (score >= 0.5)
@@ -188,7 +203,7 @@ export async function POST(request: Request): Promise<Response> {
     try {
       rawParsed = JSON.parse(cleaned) as Record<string, unknown>
     } catch {
-      console.error("JSON parse failure from model output:", cleaned)
+      console.error("JSON parse failure: model output was not valid JSON (output length: " + cleaned.length + ")")
       return Response.json(
         { error: "Model output was not valid JSON. Please review details manually." },
         { status: 502 }
@@ -201,7 +216,8 @@ export async function POST(request: Request): Promise<Response> {
     // Validate with Zod
     const parsedResult = ExtractionResultSchema.safeParse(sanitized)
     if (!parsedResult.success) {
-      console.error("Zod validation failed for extraction:", parsedResult.error)
+      const issueSummary = parsedResult.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ")
+      console.error("Zod validation failed for extraction:", issueSummary)
       return Response.json(
         {
           error: "Extracted data failed validation.",
@@ -215,15 +231,22 @@ export async function POST(request: Request): Promise<Response> {
       extraction: parsedResult.data,
       model: GROQ_MODELS.chat,
       provider: "GroqCloud",
-      metaSafetyAudit: metaPromptGuardScore !== null ? {
+      metaSafetyAudit: {
         model: "meta-llama/llama-prompt-guard-2-86m",
         jailbreakScore: metaPromptGuardScore,
-        status: metaPromptGuardScore < 0.5 ? "passed" : "flagged",
-      } : null,
+        status: metaGuardStatus,
+        policy:
+          metaGuardStatus === "passed"
+            ? "Screened with Meta Prompt Guard: no adversarial injection detected."
+            : metaGuardStatus === "flagged"
+            ? "Flagged by Meta Prompt Guard."
+            : "Screening unavailable; extracted under strict zero-hallucination system prompt.",
+      },
       modelDisclosure: {
         extractionModel: GROQ_MODELS.chat,
         transcriptionModel: GROQ_MODELS.whisper,
-        metaModelEvaluated: metaPromptGuardScore !== null ? "meta-llama/llama-prompt-guard-2-86m" : null,
+        metaModelEvaluated: "meta-llama/llama-prompt-guard-2-86m",
+        metaGuardStatus,
         metaLlamaGenerativeStatus: "not_available_on_current_groq_account",
       },
     })
@@ -231,10 +254,11 @@ export async function POST(request: Request): Promise<Response> {
     if (err instanceof ProviderUnconfiguredError) {
       return Response.json({ error: err.message, unconfigured: true }, { status: 503 })
     }
-    const message = err instanceof Error ? err.message : "AI extraction failed. Please check your Groq API key and network connection."
-    console.error("Groq chat extraction error:", err)
+    const rawMessage = err instanceof Error ? err.message : "AI extraction failed. Please check your Groq API key and network connection."
+    const safeMessage = redactSecrets(rawMessage)
+    console.error("Groq chat extraction error:", safeMessage)
     return Response.json(
-      { error: message },
+      { error: safeMessage },
       { status: 502 }
     )
   }

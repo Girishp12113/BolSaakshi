@@ -31,6 +31,12 @@ const ALLOWED_MIME_TYPES = [
 
 const ALLOWED_EXTENSIONS = ["webm", "mp4", "m4a", "wav", "ogg", "mp3", "flac", "oga"]
 
+function redactSecrets(text: string): string {
+  return text
+    .replace(/gsk_[a-zA-Z0-9_-]+/g, "[REDACTED_API_KEY]")
+    .replace(/Bearer\s+[a-zA-Z0-9_\-.]+/gi, "Bearer [REDACTED_TOKEN]")
+}
+
 export async function POST(request: Request): Promise<Response> {
   try {
     if (!isGroqConfigured()) {
@@ -131,11 +137,12 @@ export async function POST(request: Request): Promise<Response> {
     if (err instanceof ProviderUnconfiguredError) {
       return Response.json({ error: err.message, unconfigured: true }, { status: 503 })
     }
-    const message = err instanceof Error ? err.message : "Whisper transcription failed. Please check your Groq API key and network connection."
-    console.error("Groq Whisper transcription route error:", err)
+    const rawMessage = err instanceof Error ? err.message : "Whisper transcription failed. Please check your Groq API key and network connection."
+    const safeMessage = redactSecrets(rawMessage)
+    console.error("Groq Whisper transcription route error:", safeMessage)
     return Response.json(
       {
-        error: message,
+        error: safeMessage,
       },
       { status: 502 }
     )

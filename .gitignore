@@ -47,3 +47,7 @@ next-env.d.ts
 # agent skills
 .agent/
 
+# QA test artifacts & temporary scratchpad
+test-screenshots/
+QA_SCRATCHPAD.md
+
