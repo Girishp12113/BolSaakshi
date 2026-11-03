@@ -1,6 +1,6 @@
 "use client"
 
-import { motion, useReducedMotion } from "framer-motion"
+import { motion } from "framer-motion"
 import Link from "next/link"
 import { Mic, ArrowRight, ShieldCheck, Sparkles, CheckCircle2, Clock } from "lucide-react"
 import AnimatedButton from "@/components/ui/animated-button"
@@ -29,10 +29,8 @@ const SAMPLE_AGREEMENT = {
 }
 
 export default function Hero() {
-  const shouldReduceMotion = useReducedMotion()
-
   const fadeUp = {
-    initial: shouldReduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 },
+    initial: { opacity: 0, y: 20 },
     animate: { opacity: 1, y: 0 },
   }
 
@@ -149,7 +147,7 @@ export default function Hero() {
 
           {/* ── Right column: Product preview (5 cols on large screens) ── */}
           <motion.div
-            initial={shouldReduceMotion ? { opacity: 1 } : { opacity: 0, y: 24 }}
+            initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.35 }}
             className="lg:col-span-5 relative"

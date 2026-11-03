@@ -1,7 +1,7 @@
 'use client'
 
 import React from "react"
-import { motion, useReducedMotion } from "framer-motion"
+import { motion } from "framer-motion"
 
 const EASE = [0.22, 1, 0.36, 1] as const
 
@@ -37,8 +37,6 @@ export function StaggerText({
   divideBy = "word",
   className = "",
 }: StaggerTextProps) {
-  const shouldReduceMotion = useReducedMotion()
-
   if (typeof children !== "string") {
     if (typeof children === "number" || typeof children === "boolean") {
       children = String(children)
@@ -48,11 +46,6 @@ export function StaggerText({
   }
 
   const text = children as string
-
-  if (shouldReduceMotion) {
-    return <span className={className}>{text}</span>
-  }
-
   const parts = divideBy === "letter" ? text.split("") : text.split(" ")
   const stagger = divideBy === "letter" ? 0.02 : 0.05
 
